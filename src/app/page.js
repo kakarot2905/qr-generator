@@ -542,9 +542,12 @@ export default function Page() {
 
             <div className="field">
               <label className="label">Size</label>
-              <div className="slider-row">
-                <input id="size-slider" type="range" className="slider" min="128" max="512" step="16" value={size} onChange={(e) => setSize(Number(e.target.value))} />
-                <span className="slider-val">{size}px</span>
+              <div className="seg">
+                {[128, 256, 384, 512].map((s) => (
+                  <button key={s} type="button" className={`seg-btn ${size === s ? "active" : ""}`} onClick={() => setSize(s)}>
+                    {s}px
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -568,7 +571,13 @@ export default function Page() {
             {dataUrl ? (
               <div className="qr-result">
                 <div className="qr-frame">
-                  <img src={dataUrl} alt="QR Code" width={Math.min(size, 260)} height={Math.min(size, 260)} />
+                  <img
+                    src={dataUrl}
+                    alt="QR Code"
+                    width={size}
+                    height={size}
+                    style={{ maxWidth: "100%", height: "auto" }}
+                  />
                 </div>
                 <span className="qr-meta">{size} × {size} · {ecl} correction</span>
 
