@@ -659,9 +659,10 @@ export default function Page() {
         </a>
         <p className="foot-credit">QR Forge — built with Next.js</p>
       </footer>
-
-      <Toasts items={toasts} />
     </div>
+
+    <Toasts items={toasts} />
+
     {showLoginModal && (
       <div className="login-modal-overlay">
         <LoginPage onClose={() => setShowLoginModal(false)} />
