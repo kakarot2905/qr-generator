@@ -285,7 +285,7 @@ export default function Page() {
     if (!d) { toast("Fill in the required fields", "error"); return; }
     setBusy(true);
     try {
-      const opts = { errorCorrectionLevel: ecl, width: size, margin: 2, color: { dark: fg, light: bg } };
+      const opts = { errorCorrectionLevel: ecl, width: size, margin: 4, color: { dark: fg, light: bg } };
       const du = await QRCode.toDataURL(d, opts);
       const sv = await QRCode.toString(d, { ...opts, type: "svg" });
       setDataUrl(du);

@@ -592,7 +592,6 @@ body {
 .qr-frame img {
   display: block;
   border-radius: 2px;
-  image-rendering: pixelated;
 }
 
 .qr-meta {
