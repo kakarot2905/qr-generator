@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, Fragment } from "react";
 import QRCode from "qrcode";
 import { useAuth } from "@/context/AuthContext";
 import LoginPage from "@/components/LoginPage";
 import { saveQR, getUserQRs, deleteQR, clearAllQRs } from "@/lib/qrService";
+import { uploadFile, MAX_FILE_SIZE } from "@/lib/storageService";
 
 /* ── Icons (thin, minimal) ── */
 
@@ -46,6 +47,19 @@ const I = {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
       <circle cx="12" cy="7" r="4" />
+    </svg>
+  ),
+  File: () => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+    </svg>
+  ),
+  Upload: () => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <polyline points="17 8 12 3 7 8" />
+      <line x1="12" y1="3" x2="12" y2="15" />
     </svg>
   ),
   QR: () => (
@@ -123,10 +137,18 @@ const TABS = [
   { id: "email", label: "Email" },
   { id: "phone", label: "Phone" },
   { id: "vcard", label: "vCard" },
+  { id: "file", label: "File" },
 ];
 
 const ECL = ["L", "M", "Q", "H"];
 const ECL_LABEL = { L: "7%", M: "15%", Q: "25%", H: "30%" };
+
+/* human-readable file size */
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 /* ── Toast ── */
 
@@ -165,6 +187,8 @@ export default function Page() {
   const [vPhone, setVPhone] = useState("");
   const [vEmail, setVEmail] = useState("");
   const [vOrg, setVOrg] = useState("");
+  const [file, setFile] = useState(null);
+  const fileInputRef = useRef(null);
 
   // style
   const [fg, setFg] = useState("#000000");
@@ -215,6 +239,13 @@ export default function Page() {
     }, 2200);
   }, []);
 
+  /* validate & store a chosen file */
+  const pickFile = useCallback((f) => {
+    if (!f) return;
+    if (f.size > MAX_FILE_SIZE) { toast("File must be under 10 MB", "error"); return; }
+    setFile(f);
+  }, [toast]);
+
   /* build data string */
   const buildData = useCallback(() => {
     switch (tab) {
@@ -257,10 +288,11 @@ export default function Page() {
       case "email": return emailLabel();
       case "phone": return `Tel: ${phone.trim()}`;
       case "vcard": return vName.trim();
+      case "file": return file ? file.name : "";
       default: return "";
     }
     function emailLabel() { return `${eTo.trim()}`; }
-  }, [tab, url, text, ssid, eTo, phone, vName]);
+  }, [tab, url, text, ssid, eTo, phone, vName, file]);
 
   const ready = useCallback(() => {
     switch (tab) {
@@ -270,9 +302,10 @@ export default function Page() {
       case "email": return eTo.trim().length > 0;
       case "phone": return phone.trim().length > 0;
       case "vcard": return vName.trim().length > 0;
+      case "file": return !!file;
       default: return false;
     }
-  }, [tab, url, text, ssid, eTo, phone, vName]);
+  }, [tab, url, text, ssid, eTo, phone, vName, file]);
 
   /* generate */
   const generate = useCallback(async () => {
@@ -281,9 +314,33 @@ export default function Page() {
       toast("Please sign in to generate QR codes", "info");
       return;
     }
-    const d = buildData();
-    if (!d) { toast("Fill in the required fields", "error"); return; }
     setBusy(true);
+
+    // Resolve what the QR will encode. A file can't fit inside a QR code, so we
+    // upload it first and point the QR at its download URL; every other tab
+    // builds its data string inline.
+    let d;
+    if (tab === "file") {
+      if (!file) { toast("Choose a file to upload", "error"); setBusy(false); return; }
+      try {
+        d = await uploadFile(user.uid, file);
+      } catch (err) {
+        console.error("File upload failed:", err);
+        const reason =
+          err?.code === "storage/unauthorized" ? "blocked by Storage rules" :
+          err?.code === "storage/unauthenticated" ? "please sign in again" :
+          err?.code === "storage/retry-limit-exceeded" ? "network/CORS issue" :
+          err?.code === "storage/unknown" ? "is Cloud Storage enabled?" :
+          (err?.code || err?.message || "try again");
+        toast(`Upload failed — ${reason}`, "error");
+        setBusy(false);
+        return;
+      }
+    } else {
+      d = buildData();
+      if (!d) { toast("Fill in the required fields", "error"); setBusy(false); return; }
+    }
+
     try {
       const opts = { errorCorrectionLevel: ecl, width: size, margin: 4, color: { dark: fg, light: bg } };
       const du = await QRCode.toDataURL(d, opts);
@@ -293,19 +350,17 @@ export default function Page() {
       setQrText(d);
       const qrItem = { text: displayText(), data: d, dataUrl: du, type: tab };
       // Save to Firestore in the background so it doesn't block the UI
-      if (user) {
-        saveQR(user.uid, qrItem)
-          .then((docId) => {
-            setHistory((p) => [{ id: docId, ...qrItem, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }, ...p]);
-          })
-          .catch((err) => {
-            console.error("Failed to save QR to Firestore:", err);
-          });
-      }
+      saveQR(user.uid, qrItem)
+        .then((docId) => {
+          setHistory((p) => [{ id: docId, ...qrItem, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }, ...p]);
+        })
+        .catch((err) => {
+          console.error("Failed to save QR to Firestore:", err);
+        });
       toast("QR code generated");
     } catch { toast("Generation failed", "error"); }
     finally { setBusy(false); }
-  }, [buildData, ecl, size, fg, bg, tab, displayText, toast, user]);
+  }, [buildData, ecl, size, fg, bg, tab, file, displayText, toast, user]);
 
   /* actions */
   const dlPNG = useCallback(() => {
@@ -445,6 +500,54 @@ export default function Page() {
             </div>
           </>
         );
+      case "file":
+        return (
+          <div className="field">
+            <label className="label">Upload a file</label>
+            <input
+              ref={fileInputRef}
+              id="file-input"
+              type="file"
+              className="file-hidden"
+              onChange={(e) => pickFile(e.target.files?.[0])}
+            />
+            <div
+              className="dropzone"
+              role="button"
+              tabIndex={0}
+              onClick={() => fileInputRef.current?.click()}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInputRef.current?.click(); } }}
+              onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add("drag"); }}
+              onDragLeave={(e) => e.currentTarget.classList.remove("drag")}
+              onDrop={(e) => { e.preventDefault(); e.currentTarget.classList.remove("drag"); pickFile(e.dataTransfer.files?.[0]); }}
+            >
+              {file ? (
+                <div className="dropzone-file">
+                  <div className="dropzone-icon"><I.File /></div>
+                  <div className="dropzone-meta">
+                    <span className="dropzone-name" title={file.name}>{file.name}</span>
+                    <span className="dropzone-size">{formatBytes(file.size)}</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="dropzone-empty">
+                  <div className="dropzone-icon"><I.Upload /></div>
+                  <span className="dropzone-text">Click or drop a file here</span>
+                  <small className="dropzone-hint">Up to 10 MB · the QR links to your file</small>
+                </div>
+              )}
+            </div>
+            {file && (
+              <button
+                type="button"
+                className="btn btn-ghost file-clear"
+                onClick={() => { setFile(null); if (fileInputRef.current) fileInputRef.current.value = ""; }}
+              >
+                <I.Trash /> Remove file
+              </button>
+            )}
+          </div>
+        );
       default: return null;
     }
   };
@@ -514,7 +617,10 @@ export default function Page() {
           {/* Input card */}
           <div className="card">
             <div className="card-label">Input</div>
-            {fields()}
+            {/* keyed by tab so each tab's fields fully remount instead of being
+                reconciled into one another (e.g. a text input becoming the file
+                input, which would flip it controlled → uncontrolled) */}
+            <Fragment key={tab}>{fields()}</Fragment>
             <button id="generate-btn" type="button" className="btn btn-primary btn-full btn-generate" onClick={generate} disabled={!ready() || busy}>
               {busy ? <><span className="spin" /> Generating…</> : <><I.QR /> Generate</>}
             </button>
